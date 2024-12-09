@@ -1,6 +1,6 @@
 ---
   - name: Deploy Red Hat Satellite
-    hosts: satellite
+    hosts: satellite.example.com
     become: true
     vars:
       satellite_version: "6.16"
@@ -8,7 +8,7 @@
       satellite_admin_password: "changeme123"
       satellite_organization: "Default Organization"
       satellite_location: "Default Location"
-      satellite_hostname: "192.168.1.6"
+      satellite_hostname: "satellite.example.com"
       required_memory_gb: 20
       required_cpu_cores: 4
   
