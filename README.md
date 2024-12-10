@@ -8,8 +8,8 @@ This Ansible playbook automates the deployment of Red Hat Satellite 6.16 on RHEL
 - Red Hat Enterprise Linux 9.x
 - Minimum 20GB RAM
 - Minimum 4 CPU cores
-- Valid Red Hat subscription with Satellite entitlements
-- Network connectivity to Red Hat CDN
+- A valid Red Hat subscription, including the free tier, with Satellite entitlements
+- Network connectivity to Red Hat's CDN
 
 ### Ansible Requirements
 - Ansible 2.9 or later
@@ -30,7 +30,7 @@ Before running the playbook, ensure:
 ### Pre-Tasks
 1. Verifies system requirements (RAM, CPU)
 2. Disables all repositories
-3. Enables required RHEL and Satellite repositories based on system architecture
+3. Enables required RHEL and Satellite repositories based on system architecture. i.e., ARM or x86
 4. Updates all system packages
 5. Installs Satellite and chronyd packages
 6. Configures firewall ports (80, 443, 5647, 8140, 9090)
