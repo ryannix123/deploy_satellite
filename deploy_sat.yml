@@ -1,6 +1,6 @@
 ---
   - name: Deploy Red Hat Satellite
-    hosts: satellite.example.com
+    hosts: satellite
     become: true
     vars:
       satellite_version: "6.16"
@@ -8,7 +8,7 @@
       satellite_admin_password: "changeme123"
       satellite_organization: "Default Organization"
       satellite_location: "Default Location"
-      satellite_hostname: "satellite.example.com"
+      satellite_hostname: "192.168.1.6"
       required_memory_gb: 20
       required_cpu_cores: 4
   
@@ -50,17 +50,41 @@
             - chrony
           state: latest
   
-      - name: Configure firewall
+      - name: Ensure firewalld is enabled and started
+        service:
+          name: firewalld
+          state: started
+          enabled: yes
+  
+      - name: Configure firewall ports
         firewalld:
           port: "{{ item }}"
           permanent: yes
           state: enabled
+          immediate: yes
         loop:
           - 80/tcp
           - 443/tcp
           - 5647/tcp
           - 8140/tcp
           - 9090/tcp
+        register: firewall_config
+        changed_when: false  # Don't mark as changed if ports are already enabled
+  
+      - name: Ensure firewall rules are applied
+        command: firewall-cmd --reload
+        when: firewall_config is success
+        register: firewall_reload
+        changed_when: firewall_reload.rc == 0
+  
+      - name: Verify firewall configuration
+        command: firewall-cmd --list-all
+        register: firewall_status
+        changed_when: false  # This is just a status check
+  
+      - name: Display current firewall configuration
+        debug:
+          var: firewall_status.stdout_lines
   
       - name: Start and enable chronyd
         service:
