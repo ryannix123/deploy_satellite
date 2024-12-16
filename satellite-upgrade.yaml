@@ -1,0 +1,44 @@
+---
+- name: Upgrade Red Hat Satellite
+  hosts: satellite
+  become: true
+  tasks:
+    - name: Ensure backup directory exists
+      file:
+        path: /var/satellite-backup
+        state: directory
+        mode: '0750'
+        
+    - name: Create backup before upgrade
+      command: satellite-maintain backup online --preserve-directory /var/satellite-backup
+      register: backup_result
+      
+    - name: Check Satellite health before upgrade
+      command: satellite-maintain health check
+      register: health_check
+      failed_when: health_check.rc != 0
+
+    - name: Stop Satellite services
+      command: satellite-maintain service stop
+      
+    - name: Update satellite packages
+      dnf:
+        name: "satellite"
+        state: latest
+        
+    - name: Run satellite-maintain upgrade
+      command: satellite-maintain upgrade
+      register: upgrade_result
+      
+    - name: Start Satellite services
+      command: satellite-maintain service start
+      
+    - name: Run post-upgrade health check
+      command: satellite-maintain health check
+      register: post_health_check
+      failed_when: post_health_check.rc != 0
+      
+    - name: Display upgrade results
+      debug:
+        msg: "Satellite upgrade completed successfully"
+      when: post_health_check.rc == 0
