@@ -1,127 +1,108 @@
 ---
-  - name: Deploy Red Hat Satellite
-    hosts: satellite
-    become: true
-    vars:
-      satellite_version: "6.16"
-      satellite_admin_username: "admin"
-      satellite_admin_password: "changeme123"
-      satellite_organization: "Default Organization"
-      satellite_location: "Default Location"
-      satellite_hostname: "192.168.1.6"
-      required_memory_gb: 20
-      required_cpu_cores: 4
-  
-    pre_tasks:
-      - name: Check system requirements
-        assert:
-          that:
-            - ansible_memtotal_mb >= (required_memory_gb * 1024)
-            - ansible_processor_vcpus >= required_cpu_cores
-          msg: "System does not meet minimum requirements of {{ required_memory_gb }}GB RAM and {{ required_cpu_cores }} CPU cores"
-  
-      - name: Disable all repositories
-        command: subscription-manager repos --disable "*"
-  
-      - name: Enable required repositories
-        command: >
-          subscription-manager repos
-          {% if ansible_architecture == 'x86_64' %}
-          --enable=rhel-9-for-x86_64-baseos-rpms
-          --enable=rhel-9-for-x86_64-appstream-rpms
-          --enable=satellite-6.16-for-rhel-9-x86_64-rpms
-          --enable=satellite-maintenance-6.16-for-rhel-9-x86_64-rpms
-          {% else %}
-          --enable=rhel-9-for-aarch64-baseos-rpms
-          --enable=rhel-9-for-aarch64-appstream-rpms
-          --enable=satellite-6.16-for-rhel-9-aarch64-rpms
-          --enable=satellite-maintenance-6.16-for-rhel-9-aarch64-rpms
-          {% endif %}
-  
-      - name: Update system packages
-        dnf:
-          name: "*"
-          state: latest
-          
-      - name: Install satellite packages
-        dnf:
-          name:
-            - satellite 
-            - chrony
-          state: latest
-  
-      - name: Ensure firewalld is enabled and started
-        service:
-          name: firewalld
-          state: started
-          enabled: yes
-  
-      - name: Configure firewall ports
-        firewalld:
-          port: "{{ item }}"
-          permanent: yes
-          state: enabled
-          immediate: yes
-        loop:
-          - 80/tcp
-          - 443/tcp
-          - 5647/tcp
-          - 8140/tcp
-          - 9090/tcp
-        register: firewall_config
-        changed_when: false  # Don't mark as changed if ports are already enabled
-  
-      - name: Ensure firewall rules are applied
-        command: firewall-cmd --reload
-        when: firewall_config is success
-        register: firewall_reload
-        changed_when: firewall_reload.rc == 0
-  
-      - name: Verify firewall configuration
-        command: firewall-cmd --list-all
-        register: firewall_status
-        changed_when: false  # This is just a status check
-  
-      - name: Display current firewall configuration
-        debug:
-          var: firewall_status.stdout_lines
-  
-      - name: Start and enable chronyd
-        service:
-          name: chronyd
-          state: started
-          enabled: yes
-  
-    tasks:
-      - name: Set hostname
-        hostname:
-          name: "satellite.example.com"
-  
-      - name: Add hostname to /etc/hosts
-        lineinfile:
-          path: /etc/hosts
-          line: "192.168.1.6 satellite.example.com satellite"
-          state: present
-  
-      - name: Run Satellite installer
-        command: >
-          satellite-installer --scenario satellite
-          --foreman-initial-admin-username {{ satellite_admin_username }}
-          --foreman-initial-admin-password {{ satellite_admin_password }}
-          --foreman-initial-organization "{{ satellite_organization }}"
-          --foreman-initial-location "{{ satellite_location }}"
-          --enable-foreman-plugin-ansible
-          --enable-foreman-plugin-discovery
-          --enable-foreman-proxy-plugin-ansible
-  
-      - name: Wait for Satellite services to start
-        pause:
-          minutes: 5
-          prompt: "Waiting for Satellite services to fully start..."
-  
-      - name: Check Satellite status
-        command: satellite-maintain service status
-        register: service_status
-        until: service_status.rc == 0
-        retries: 12
-        delay: 30
+- name: Deploy Red Hat Satellite
+  hosts: satellite
+  become: true
+  vars:
+    satellite_version: "6.16"
+    satellite_admin_username: "admin"
+    satellite_admin_password: "changeme123"
+    satellite_organization: "Default Organization"
+    satellite_location: "Default Location"
+    satellite_hostname: "192.168.1.6"
+    required_memory_gb: 20
+    required_cpu_cores: 4
+
+  pre_tasks:
+    - name: Check system requirements
+      assert:
+        that:
+          - ansible_memtotal_mb >= (required_memory_gb * 1024)
+          - ansible_processor_vcpus >= required_cpu_cores
+        msg: "System does not meet minimum requirements of {{ required_memory_gb }}GB RAM and {{ required_cpu_cores }} CPU cores"
+
+    - name: Disable all repositories
+      command: subscription-manager repos --disable "*"
+
+    - name: Enable required repositories
+      command: >
+        subscription-manager repos
+        {% if ansible_architecture == 'x86_64' %}
+        --enable=rhel-9-for-x86_64-baseos-rpms
+        --enable=rhel-9-for-x86_64-appstream-rpms
+        --enable=satellite-6.16-for-rhel-9-x86_64-rpms
+        --enable=satellite-maintenance-6.16-for-rhel-9-x86_64-rpms
+        {% else %}
+        --enable=rhel-9-for-aarch64-baseos-rpms
+        --enable=rhel-9-for-aarch64-appstream-rpms
+        --enable=satellite-6.16-for-rhel-9-aarch64-rpms
+        --enable=satellite-maintenance-6.16-for-rhel-9-aarch64-rpms
+        {% endif %}
+
+    - name: Update system packages
+      dnf:
+        name: "*"
+        state: latest
+        
+    - name: Install satellite packages
+      dnf:
+        name:
+          - satellite 
+          - chrony
+        state: latest
+
+    - name: Ensure firewalld is enabled and started
+      service:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Configure Firewall Services
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - http
+        - https
+        - RH-Satellite-6
+
+    - name: Start and enable chronyd
+      service:
+        name: chronyd
+        state: started
+        enabled: yes
+
+  tasks:
+    - name: Set hostname
+      hostname:
+        name: "satellite.example.com"
+
+    - name: Add hostname to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "192.168.1.6 satellite.example.com satellite"
+        state: present
+
+    - name: Run Satellite installer
+      command: >
+        satellite-installer --scenario satellite
+        --foreman-initial-admin-username {{ satellite_admin_username }}
+        --foreman-initial-admin-password {{ satellite_admin_password }}
+        --foreman-initial-organization "{{ satellite_organization }}"
+        --foreman-initial-location "{{ satellite_location }}"
+        --enable-foreman-plugin-ansible
+        --enable-foreman-plugin-discovery
+        --enable-foreman-proxy-plugin-ansible
+
+    - name: Wait for Satellite services to start
+      pause:
+        minutes: 5
+        prompt: "Waiting for Satellite services to fully start..."
+
+    - name: Check Satellite status
+      command: satellite-maintain service status
+      register: service_status
+      until: service_status.rc == 0
+      retries: 12
+      delay: 30
