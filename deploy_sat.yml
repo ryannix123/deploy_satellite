@@ -1,0 +1,245 @@
+---
+# Deploy Red Hat Satellite 6.18 with Lightspeed Advisor
+#
+# Variables are loaded from group_vars/satellite/vars.yml and vault.yml.
+# Override any value at runtime with -e:
+#
+#   ansible-playbook deploy_sat.yml --ask-vault-pass
+#   ansible-playbook deploy_sat.yml --ask-vault-pass -e satellite_fqdn='sat.lab.local'
+#
+- name: Deploy Red Hat Satellite
+  hosts: satellite
+  become: true
+
+  pre_tasks:
+    # ── Credential validation ────────────────────────────────
+    - name: Validate credentials are provided
+      ansible.builtin.assert:
+        that:
+          - satellite_admin_password is defined
+          - satellite_admin_password != 'CHANGEME'
+          - rh_registry_user | length > 0
+          - rh_registry_user != 'CHANGEME'
+          - rh_registry_password | length > 0
+        fail_msg: >-
+          Missing or placeholder credentials. Encrypt real values in
+          group_vars/satellite/vault.yml or pass them with -e.
+
+    # ── System requirements ──────────────────────────────────
+    - name: Check memory and CPU requirements
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['memtotal_mb'] | int >= (required_memory_gb | int * 1024)
+          - ansible_facts['processor_vcpus'] | int >= required_cpu_cores | int
+        fail_msg: >-
+          System does not meet minimums
+          (need {{ required_memory_gb }} GB RAM, {{ required_cpu_cores }} vCPUs).
+
+    - name: Check available disk space on /var
+      ansible.builtin.shell:
+        cmd: df --output=avail -BG /var | tail -1 | tr -d ' G'
+      register: var_space
+      changed_when: false
+
+    - name: Assert /var has sufficient free space
+      ansible.builtin.assert:
+        that:
+          - var_space.stdout | int >= required_disk_gb | int
+        fail_msg: >-
+          /var has only {{ var_space.stdout }} GB free
+          (need {{ required_disk_gb }} GB).
+
+    # ── Hostname and DNS ───────────────────────────────────
+    - name: Set hostname
+      ansible.builtin.hostname:
+        name: "{{ satellite_fqdn }}"
+
+    - name: "Ensure {{ satellite_fqdn }} resolves in /etc/hosts"
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '.*{{ satellite_fqdn }}.*'
+        line: >-
+          {{ ansible_facts['default_ipv4']['address'] }}
+          {{ satellite_fqdn }}
+          {{ satellite_fqdn.split('.')[0] }}
+        state: present
+
+    - name: "DNS: Verify FQDN resolves to local IP"
+      ansible.builtin.shell:
+        cmd: "getent ahostsv4 {{ satellite_fqdn }} | head -1 | awk '{print $1}'"
+      register: dns_lookup
+      changed_when: false
+      failed_when: >-
+        dns_lookup.stdout != ansible_facts['default_ipv4']['address']
+
+    # ── System preparation ────────────────────────────────
+    - name: Ensure persistent logging for the systemd journal
+      ansible.builtin.file:
+        path: /var/log/journal
+        state: directory
+        owner: root
+        group: systemd-journal
+        mode: u=rwx,g=rs,o=rx
+
+    - name: Apply all available errata
+      ansible.builtin.package:
+        update_cache: true
+        name: '*'
+        state: latest  ## noqa: package-latest
+      tags: apply_errata
+
+    - name: Check if reboot is required after updates
+      ansible.builtin.command: dnf needs-restarting -r
+      register: reboot_needed
+      changed_when: reboot_needed.rc != 0
+      failed_when: false
+
+    - name: Reboot if kernel or core libraries were updated
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when:
+        - reboot_needed.rc is defined
+        - reboot_needed.rc == 1
+      tags: autoreboot
+
+    # ── Registry authentication (persisted for root) ─────────
+    - name: Ensure persistent podman auth directory exists for root
+      ansible.builtin.file:
+        path: /root/.config/containers
+        state: directory
+        mode: "0700"
+
+    - name: Log into Red Hat Registry (persistent auth for root)
+      containers.podman.podman_login:
+        registry: registry.redhat.io
+        username: "{{ rh_registry_user }}"
+        password: "{{ rh_registry_password }}"
+        authfile: /root/.config/containers/auth.json
+
+  tasks:
+    # ── Repository setup ─────────────────────────────────────
+    - name: Disable all RHSM repositories
+      community.general.rhsm_repository:
+        name: "*"
+        state: disabled
+
+    - name: Enable required repositories for Satellite {{ satellite_version }}
+      community.general.rhsm_repository:
+        name: "{{ item }}"
+        state: enabled
+      loop:
+        - "rhel-9-for-{{ ansible_facts['architecture'] }}-baseos-rpms"
+        - "rhel-9-for-{{ ansible_facts['architecture'] }}-appstream-rpms"
+        - "satellite-{{ satellite_version }}-for-rhel-9-{{ ansible_facts['architecture'] }}-rpms"
+        - "satellite-maintenance-{{ satellite_version }}-for-rhel-9-{{ ansible_facts['architecture'] }}-rpms"
+
+    # ── Package installation ─────────────────────────────────
+    - name: Install Satellite and dependencies
+      ansible.builtin.dnf:
+        name:
+          - satellite
+          - chrony
+        state: present
+
+    # ── Network and system configuration ─────────────────────
+    - name: Ensure firewalld is running
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Configure firewall services
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop: "{{ satellite_firewall_services }}"
+
+    - name: Start and enable chronyd
+      ansible.builtin.service:
+        name: chronyd
+        state: started
+        enabled: true
+
+    # ── Satellite installer ──────────────────────────────────
+    # Uses the redhat.satellite_operations.installer role
+    # (community equivalent: theforeman.operations.installer)
+    - name: Check if Satellite is already installed
+      ansible.builtin.stat:
+        path: /etc/foreman-installer/scenarios.d/.installed
+      register: satellite_installed
+
+    - name: "Run satellite-installer (scenario: satellite)"
+      ansible.builtin.include_role:
+        name: redhat.satellite_operations.installer
+      vars:
+        foreman_installer_scenario: satellite
+        foreman_installer_command: satellite-installer
+        foreman_installer_options:
+          - '--foreman-initial-admin-username {{ satellite_admin_username }}'
+          - '--foreman-initial-admin-password {{ satellite_admin_password }}'
+          - '--foreman-initial-organization "{{ satellite_organization }}"'
+          - '--foreman-initial-location "{{ satellite_location }}"'
+          - '--tuning {{ satellite_tuning }}'
+          - '--enable-foreman-plugin-ansible'
+          - '--enable-foreman-plugin-discovery'
+          - '--enable-foreman-proxy-plugin-ansible'
+          - '--enable-foreman-plugin-rh-cloud'
+      when: not satellite_installed.stat.exists
+
+    # ── Lightspeed Advisor (on-prem Insights) ────────────────
+    - name: Pre-pull IOP container images
+      when: enable_lightspeed_advisor
+      containers.podman.podman_image:
+        name: "registry.redhat.io/{{ item }}"
+        state: present
+      loop:
+        - "satellite/iop-insights-engine-rhel9:{{ satellite_version }}"
+        - "satellite/iop-ingress-rhel9:{{ satellite_version }}"
+        - "satellite/iop-host-inventory-rhel9:{{ satellite_version }}"
+        - "satellite/iop-host-inventory-frontend-rhel9:{{ satellite_version }}"
+        - "satellite/iop-vulnerability-frontend-rhel9:{{ satellite_version }}"
+        - "satellite/iop-advisor-frontend-rhel9:{{ satellite_version }}"
+        - "satellite/iop-puptoo-rhel9:{{ satellite_version }}"
+        - "satellite/iop-yuptoo-rhel9:{{ satellite_version }}"
+        - "satellite/iop-vmaas-rhel9:{{ satellite_version }}"
+        - "satellite/iop-vulnerability-engine-rhel9:{{ satellite_version }}"
+        - "satellite/iop-advisor-backend-rhel9:{{ satellite_version }}"
+        - "satellite/iop-remediations-rhel9:{{ satellite_version }}"
+        - "satellite/iop-gateway-rhel9:{{ satellite_version }}"
+        - "amq-streams/kafka-39-rhel9:2.9.1-1"
+
+    - name: Reset any failed IOP systemd units from prior runs
+      when: enable_lightspeed_advisor
+      ansible.builtin.shell:
+        cmd: "systemctl reset-failed 'iop-*' 2>/dev/null || true"
+      changed_when: false
+
+    - name: Enable Lightspeed Advisor (on-prem Insights)
+      when: enable_lightspeed_advisor
+      ansible.builtin.include_role:
+        name: redhat.satellite_operations.installer
+      vars:
+        foreman_installer_scenario: satellite
+        foreman_installer_command: satellite-installer
+        foreman_installer_options:
+          - '--enable-iop'
+
+    # ── Health check ─────────────────────────────────────────
+    - name: Wait for Satellite services to be healthy
+      ansible.builtin.command:
+        cmd: satellite-maintain service status
+      register: service_status
+      until: service_status.rc == 0
+      retries: 30
+      delay: 30
+      changed_when: false
+
+  post_tasks:
+    - name: Display Satellite completion info
+      ansible.builtin.debug:
+        msg: >-
+          Satellite deployment complete.
+          URL: https://{{ satellite_fqdn }}
+          Lightspeed Advisor: {{ 'enabled' if enable_lightspeed_advisor else 'disabled' }}

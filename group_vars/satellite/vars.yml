@@ -1,0 +1,14 @@
+# group_vars/satellite/vault.yml
+#
+# REFERENCE TEMPLATE — do not save credentials here in plaintext.
+# Instead, delete this file and create an encrypted one:
+#
+#   rm group_vars/satellite/vault.yml
+#   ansible-vault create group_vars/satellite/vault.yml
+#
+# Paste the variables below (with real values), save, and quit.
+# The file is encrypted immediately — credentials never touch disk unencrypted.
+#
+vault_satellite_admin_password: "CHANGEME"
+vault_rh_registry_user: "redhat_user@email.com"
+vault_rh_registry_password: "CHANGEME"

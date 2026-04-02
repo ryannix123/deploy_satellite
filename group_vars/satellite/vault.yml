@@ -1,0 +1,9 @@
+# group_vars/satellite/vault.yml
+# Encrypt this file:  ansible-vault encrypt group_vars/satellite/vault.yml
+#
+# Or encrypt individual strings:
+#   ansible-vault encrypt_string 'S3cureP@ss' --name vault_satellite_admin_password
+#
+vault_satellite_admin_password: "CHANGEME"
+vault_rh_registry_user: "CHANGEME"
+vault_rh_registry_password: "CHANGEME"

@@ -1,0 +1,64 @@
+---
+# satellite-upgrade-hop.yml
+# Included by satellite-upgrade.yml — handles a single version hop.
+# Expects variable: hop_version (e.g., "6.17")
+
+- name: "── Hop to Satellite {{ hop_version }} ──────────────"
+  ansible.builtin.debug:
+    msg: "Starting upgrade hop to {{ hop_version }}"
+
+# ── Repository swap ────────────────────────────────────────
+- name: "Enable target repositories for {{ hop_version }}"
+  ansible.builtin.command:
+    cmd: "satellite-maintain repository enable --target-version {{ hop_version }}"
+  register: repo_enable
+  changed_when: repo_enable.rc == 0
+
+# ── Update satellite-maintain ──────────────────────────────
+- name: Update satellite-maintain tooling
+  ansible.builtin.dnf:
+    name: rubygem-foreman_maintain
+    state: latest
+
+# ── Pre-flight check ──────────────────────────────────────
+- name: "Run upgrade pre-checks for {{ hop_version }}"
+  ansible.builtin.command:
+    cmd: "satellite-maintain upgrade check --target-version {{ hop_version }} --assumeyes"
+  register: precheck
+  changed_when: false
+  failed_when:
+    - precheck.rc != 0
+    - "'FAIL' in precheck.stdout"
+
+# ── Run the upgrade ───────────────────────────────────────
+- name: "Run upgrade to {{ hop_version }}"
+  ansible.builtin.command:
+    cmd: "satellite-maintain upgrade run --target-version {{ hop_version }} --assumeyes"
+  register: upgrade_result
+  timeout: 7200
+
+- name: "Check if reboot is required after {{ hop_version }} upgrade"
+  ansible.builtin.command:
+    cmd: needs-restarting -r
+  register: reboot_check
+  changed_when: false
+  failed_when: false
+
+- name: "Reboot after {{ hop_version }} upgrade if required"
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+  when: reboot_check.rc != 0
+
+# ── Post-hop verification ─────────────────────────────────
+- name: "Verify services are healthy after {{ hop_version }} upgrade"
+  ansible.builtin.command:
+    cmd: satellite-maintain service status
+  register: hop_health
+  until: hop_health.rc == 0
+  retries: 10
+  delay: 30
+  changed_when: false
+
+- name: "Hop to {{ hop_version }} complete"
+  ansible.builtin.debug:
+    msg: "Satellite {{ hop_version }} upgrade verified — services healthy."

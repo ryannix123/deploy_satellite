@@ -1,0 +1,212 @@
+---
+# Upgrade Red Hat Satellite through sequential minor versions
+# Ryan Nix <ryan.nix@gmail.com>
+# Updated: April 2026
+#
+# Variables loaded from group_vars/satellite/vars.yml and vault.yml.
+#
+# Usage:
+#   # Upgrade from 6.16 → 6.17 → 6.18:
+#   ansible-playbook satellite-upgrade.yml --ask-vault-pass \
+#     -e current_version=6.16 \
+#     -e target_version=6.18
+#
+#   # Single hop (6.17 → 6.18):
+#   ansible-playbook satellite-upgrade.yml --ask-vault-pass \
+#     -e current_version=6.17 \
+#     -e target_version=6.18
+#
+#   # Skip Lightspeed Advisor enablement:
+#   ansible-playbook satellite-upgrade.yml --ask-vault-pass \
+#     -e current_version=6.17 \
+#     -e target_version=6.18 \
+#     -e enable_lightspeed_advisor=false
+#
+- name: Upgrade Red Hat Satellite
+  hosts: satellite
+  become: true
+
+  vars:
+    current_version: ""
+    target_version: "6.18"
+    enable_lightspeed_advisor: true
+    satellite_organization: "Default Organization"
+    backup_dir: "/var/satellite-backup"
+
+    # Build the ordered list of versions to step through.
+    # Satellite only supports upgrading one minor version at a time.
+    all_versions:
+      - "6.14"
+      - "6.15"
+      - "6.16"
+      - "6.17"
+      - "6.18"
+
+  pre_tasks:
+    - name: Validate version inputs
+      ansible.builtin.assert:
+        that:
+          - current_version | length > 0
+          - current_version in all_versions
+          - target_version in all_versions
+          - all_versions.index(target_version) > all_versions.index(current_version)
+        fail_msg: >-
+          Invalid version inputs. Provide -e current_version=X.Y -e target_version=X.Y.
+          Current must be older than target. Supported: {{ all_versions | join(', ') }}
+
+    - name: Build upgrade path
+      ansible.builtin.set_fact:
+        upgrade_path: >-
+          {{ all_versions[all_versions.index(current_version) + 1 : all_versions.index(target_version) + 1] }}
+
+    - name: Display upgrade plan
+      ansible.builtin.debug:
+        msg:
+          - "Upgrade plan: {{ current_version }} → {{ upgrade_path | join(' → ') }}"
+          - "Hops required: {{ upgrade_path | length }}"
+          - "Lightspeed Advisor: {{ 'Enable after final hop' if enable_lightspeed_advisor else 'Skip' }}"
+
+    - name: Confirm current Satellite version
+      ansible.builtin.shell:
+        cmd: rpm -q satellite --qf '%{VERSION}'
+      register: installed_version
+      changed_when: false
+
+    - name: Verify installed version matches declared current_version
+      ansible.builtin.assert:
+        that:
+          - installed_version.stdout is version(current_version, '>=')
+          - installed_version.stdout is version(target_version, '<')
+        fail_msg: >-
+          Installed Satellite version {{ installed_version.stdout }} does not match
+          declared current_version {{ current_version }}.
+
+    # ── Backup ─────────────────────────────────────────────
+    - name: Ensure backup directory exists
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Create backup before upgrade
+      ansible.builtin.command:
+        cmd: >-
+          satellite-maintain backup online
+          --preserve-directory
+          --assumeyes
+          {{ backup_dir }}
+      register: backup_result
+      timeout: 3600
+
+    - name: Verify backup completed
+      ansible.builtin.assert:
+        that: backup_result.rc == 0
+        fail_msg: "Backup failed. Resolve before continuing. Output: {{ backup_result.stderr }}"
+
+  tasks:
+    # ── Sequential version upgrades ────────────────────────
+    - name: "Upgrade through each version hop"
+      ansible.builtin.include_tasks: satellite-upgrade-hop.yml
+      loop: "{{ upgrade_path }}"
+      loop_control:
+        loop_var: hop_version
+
+    # ── Lightspeed Advisor (6.18+) ─────────────────────────
+    # Registry auth, pre-pull, and reset-failed are required
+    # because the IOP Quadlet units run as root and need
+    # persistent auth at /root/.config/containers/auth.json.
+    - name: Ensure persistent podman auth directory exists for root
+      when:
+        - enable_lightspeed_advisor
+        - target_version is version('6.18', '>=')
+      ansible.builtin.file:
+        path: /root/.config/containers
+        state: directory
+        mode: "0700"
+
+    - name: Log into Red Hat Registry (persistent auth for root)
+      when:
+        - enable_lightspeed_advisor
+        - target_version is version('6.18', '>=')
+        - rh_registry_user is defined
+        - rh_registry_user | length > 0
+      containers.podman.podman_login:
+        registry: registry.redhat.io
+        username: "{{ rh_registry_user }}"
+        password: "{{ rh_registry_password }}"
+        authfile: /root/.config/containers/auth.json
+
+    - name: Pre-pull IOP container images
+      when:
+        - enable_lightspeed_advisor
+        - target_version is version('6.18', '>=')
+      containers.podman.podman_image:
+        name: "registry.redhat.io/{{ item }}"
+        state: present
+      loop:
+        - "satellite/iop-insights-engine-rhel9:{{ target_version }}"
+        - "satellite/iop-ingress-rhel9:{{ target_version }}"
+        - "satellite/iop-host-inventory-rhel9:{{ target_version }}"
+        - "satellite/iop-host-inventory-frontend-rhel9:{{ target_version }}"
+        - "satellite/iop-vulnerability-frontend-rhel9:{{ target_version }}"
+        - "satellite/iop-advisor-frontend-rhel9:{{ target_version }}"
+        - "satellite/iop-puptoo-rhel9:{{ target_version }}"
+        - "satellite/iop-yuptoo-rhel9:{{ target_version }}"
+        - "satellite/iop-vmaas-rhel9:{{ target_version }}"
+        - "satellite/iop-vulnerability-engine-rhel9:{{ target_version }}"
+        - "satellite/iop-advisor-backend-rhel9:{{ target_version }}"
+        - "satellite/iop-remediations-rhel9:{{ target_version }}"
+        - "satellite/iop-gateway-rhel9:{{ target_version }}"
+        - "amq-streams/kafka-39-rhel9:2.9.1-1"
+
+    - name: Reset any failed IOP systemd units from prior runs
+      when:
+        - enable_lightspeed_advisor
+        - target_version is version('6.18', '>=')
+      ansible.builtin.shell:
+        cmd: "systemctl reset-failed 'iop-*' 2>/dev/null || true"
+      changed_when: false
+
+    - name: Enable Lightspeed Advisor (on-prem Insights)
+      when:
+        - enable_lightspeed_advisor
+        - target_version is version('6.18', '>=')
+      ansible.builtin.command:
+        cmd: "satellite-installer --enable-iop"
+      register: advisor_result
+      changed_when: advisor_result.rc == 0
+
+    # ── Manifest refresh ───────────────────────────────────
+    - name: Refresh subscription manifest
+      ansible.builtin.command:
+        cmd: >-
+          hammer subscription refresh-manifest
+          --organization "{{ satellite_organization }}"
+      register: manifest_refresh
+      changed_when: "'Successfully' in manifest_refresh.stdout"
+      failed_when: false
+
+  post_tasks:
+    - name: Final health check
+      ansible.builtin.command:
+        cmd: satellite-maintain health check
+      register: final_health
+      changed_when: false
+
+    - name: Display upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "============================================="
+          - "  Satellite upgrade complete"
+          - "============================================="
+          - "  Path:      {{ current_version }} → {{ upgrade_path | join(' → ') }}"
+          - "  Installed: {{ target_version }}"
+          - "  Advisor:   {{ 'Enabled' if enable_lightspeed_advisor else 'Skipped' }}"
+          - "  Health:    {{ 'OK' if final_health.rc == 0 else 'WARNINGS — review output' }}"
+          - ""
+          - "  Post-upgrade checklist:"
+          - "    - Verify provisioning templates in the UI"
+          - "    - Reboot any discovered hosts"
+          - "    - Sync updated Satellite Client repos"
+          - "    - Upgrade Capsule Servers separately"
+          - "============================================="
