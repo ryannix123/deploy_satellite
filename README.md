@@ -39,16 +39,8 @@ deploy_satellite/
 - Required collections:
 
 ```bash
-ansible-galaxy collection install community.general ansible.posix containers.podman redhat.satellite_operations
+ansible-galaxy collection install community.general ansible.posix containers.podman
 ```
-
-If you don't have access to Automation Hub for the productised collection, use the community equivalent:
-
-```bash
-ansible-galaxy collection install theforeman.operations
-```
-
-Then update the `include_role` references in the playbook from `redhat.satellite_operations.installer` to `theforeman.operations.installer`.
 
 ### Passwordless Sudo
 
@@ -129,8 +121,10 @@ ansible-playbook -i inventory.ini deploy_sat.yml --ask-vault-pass
 
 1. **Credential validation** — asserts that admin password and registry credentials are present and not placeholders.
 2. **System checks** — validates RAM, CPU, and `/var` disk space against Satellite 6.18 minimums.
-3. **DNS check** — verifies the FQDN resolves to the server's IP.
-4. **Registry authentication** — runs `podman login` as root and persists the auth token to `/root/.config/containers/auth.json`. This is critical because the IOP containers are managed by systemd Quadlet units that run as root. Without persistent auth at this path, the Quadlet units fail to pull images and hit their restart limit.
+3. **Hostname and DNS** — sets the FQDN, writes `/etc/hosts`, and verifies resolution.
+4. **Persistent journal** — creates `/var/log/journal` so systemd journal logs survive reboots (essential for debugging IOP Quadlet failures after a reboot).
+5. **System update and reboot** — applies all available errata and reboots if the kernel or core libraries were updated. Ensures a clean baseline before Satellite installation.
+6. **Registry authentication** — runs `podman login` as root and persists the auth token to `/root/.config/containers/auth.json`. This is critical because the IOP containers are managed by systemd Quadlet units that run as root. Without persistent auth at this path, the Quadlet units fail to pull images and hit their restart limit.
 
 ### Main Tasks
 

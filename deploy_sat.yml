@@ -163,30 +163,22 @@
         enabled: true
 
     # ── Satellite installer ──────────────────────────────────
-    # Uses the redhat.satellite_operations.installer role
-    # (community equivalent: theforeman.operations.installer)
-    - name: Check if Satellite is already installed
-      ansible.builtin.stat:
-        path: /etc/foreman-installer/scenarios.d/.installed
-      register: satellite_installed
-
+    # Runs satellite-installer directly, matching the official
+    # Red Hat installation procedure.
     - name: "Run satellite-installer (scenario: satellite)"
-      ansible.builtin.include_role:
-        name: redhat.satellite_operations.installer
-      vars:
-        foreman_installer_scenario: satellite
-        foreman_installer_command: satellite-installer
-        foreman_installer_options:
-          - '--foreman-initial-admin-username {{ satellite_admin_username }}'
-          - '--foreman-initial-admin-password {{ satellite_admin_password }}'
-          - '--foreman-initial-organization "{{ satellite_organization }}"'
-          - '--foreman-initial-location "{{ satellite_location }}"'
-          - '--tuning {{ satellite_tuning }}'
-          - '--enable-foreman-plugin-ansible'
-          - '--enable-foreman-plugin-discovery'
-          - '--enable-foreman-proxy-plugin-ansible'
-          - '--enable-foreman-plugin-rh-cloud'
-      when: not satellite_installed.stat.exists
+      ansible.builtin.command:
+        cmd: >-
+          satellite-installer --scenario satellite
+          --foreman-initial-admin-username {{ satellite_admin_username }}
+          --foreman-initial-admin-password {{ satellite_admin_password }}
+          --foreman-initial-organization "{{ satellite_organization }}"
+          --foreman-initial-location "{{ satellite_location }}"
+          --tuning {{ satellite_tuning }}
+          --enable-foreman-plugin-ansible
+          --enable-foreman-plugin-discovery
+          --enable-foreman-proxy-plugin-ansible
+          --enable-foreman-plugin-rh-cloud
+        creates: /etc/foreman-installer/scenarios.d/.installed
 
     # ── Lightspeed Advisor (on-prem Insights) ────────────────
     - name: Pre-pull IOP container images
@@ -218,13 +210,10 @@
 
     - name: Enable Lightspeed Advisor (on-prem Insights)
       when: enable_lightspeed_advisor
-      ansible.builtin.include_role:
-        name: redhat.satellite_operations.installer
-      vars:
-        foreman_installer_scenario: satellite
-        foreman_installer_command: satellite-installer
-        foreman_installer_options:
-          - '--enable-iop'
+      ansible.builtin.command:
+        cmd: "satellite-installer --enable-iop"
+      register: advisor_result
+      changed_when: advisor_result.rc == 0
 
     # ── Health check ─────────────────────────────────────────
     - name: Wait for Satellite services to be healthy
