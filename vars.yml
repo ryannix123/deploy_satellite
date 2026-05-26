@@ -1,0 +1,31 @@
+# group_vars/satellite/vars.yml
+# Non-sensitive defaults for Satellite deployment.
+# Sensitive values are pulled from vault.yml automatically.
+
+# Satellite version — drives repo names and IOP container image tags.
+# Tested with 6.18 and 6.19. For 6.19, override with:
+#   -e satellite_version=6.19
+satellite_version: "6.18"
+satellite_admin_username: "admin"
+satellite_admin_password: "{{ vault_satellite_admin_password }}"
+
+rh_registry_user: "{{ vault_rh_registry_user }}"
+rh_registry_password: "{{ vault_rh_registry_password }}"
+
+satellite_organization: "Default Organization"
+satellite_location: "Default Location"
+satellite_fqdn: "satellite.example.com"
+satellite_tuning: "development"
+
+enable_lightspeed_advisor: true
+
+required_memory_gb: 20
+required_cpu_cores: 4
+required_disk_gb: 100
+
+satellite_manifest_path: "/root/manifest.zip"
+
+satellite_firewall_services:
+  - http
+  - https
+  - RH-Satellite-6
