@@ -25,6 +25,23 @@
           Missing or placeholder credentials. Encrypt real values in
           group_vars/satellite/vault.yml or pass them with -e.
 
+    # ── RHSM registration ───────────────────────────────────
+    - name: Verify system is registered with Red Hat
+      ansible.builtin.command:
+        cmd: subscription-manager identity
+      register: rhsm_identity
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if system is not properly registered
+      ansible.builtin.assert:
+        that:
+          - rhsm_identity.rc == 0
+          - "'has been deleted' not in rhsm_identity.stdout"
+        fail_msg: >-
+          This system is not properly registered with Red Hat.
+          Run: subscription-manager clean && subscription-manager register && subscription-manager attach --auto
+
     # ── System requirements ──────────────────────────────────
     - name: Check memory and CPU requirements
       ansible.builtin.assert:

@@ -120,7 +120,8 @@ ansible-playbook -i inventory.ini deploy_sat.yml --ask-vault-pass
 ### Pre-Tasks
 
 1. **Credential validation** — asserts that admin password and registry credentials are present and not placeholders.
-2. **System checks** — validates RAM, CPU, and `/var` disk space against Satellite 6.18 minimums.
+2. **RHSM registration** — verifies the system is registered with Red Hat and the consumer profile hasn't been deleted server-side. Catches stale registrations from snapshots or reprovisioned hosts.
+3. **System checks** — validates RAM, CPU, and `/var` disk space against Satellite 6.18 minimums.
 3. **Hostname and DNS** — sets the FQDN, writes `/etc/hosts`, and verifies resolution.
 4. **Persistent journal** — creates `/var/log/journal` so systemd journal logs survive reboots (essential for debugging IOP Quadlet failures after a reboot).
 5. **System update and reboot** — applies all available errata and reboots if the kernel or core libraries were updated. Ensures a clean baseline before Satellite installation.
@@ -240,6 +241,7 @@ satellite-installer --enable-iop
 | Symptom | Fix |
 |---|---|
 | `/var has only XX GB free (need 100 GB)` | Override with `-e required_disk_gb=50` for demos/home labs. Not recommended for production with many synced repos. |
+| `consumer profile has been deleted from the server` or errata task fails with `Cannot download repomd.xml` | Stale registration (common with snapshots). Run `subscription-manager clean && subscription-manager register && subscription-manager attach --auto`. |
 | Installer fails at step ~1000 with `unable to retrieve auth token` | Root podman auth missing. Re-run `podman login` and verify `/root/.config/containers/auth.json` exists. |
 | IOP units stuck in `failed` state | `systemctl reset-failed 'iop-*'` then re-run the installer. |
 | Installer hangs or OOM-killed | Need 20+ GB RAM. Use `--tuning development` for constrained hosts. |
