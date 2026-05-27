@@ -5,8 +5,11 @@
 # Variables are loaded from group_vars/satellite/vars.yml and vault.yml.
 # Override any value at runtime with -e:
 #
-#   ansible-playbook deploy_sat.yml --ask-vault-pass
-#   ansible-playbook deploy_sat.yml --ask-vault-pass -e satellite_fqdn='sat.lab.local'
+#   # Run from the Satellite server itself (localhost):
+#   ansible-playbook -i inventory.ini deploy_sat.yml --ask-vault-pass
+#
+#   # Run from a remote control node:
+#   ansible-playbook -i inventory.ini deploy_sat.yml --ask-vault-pass
 #
 - name: Deploy Red Hat Satellite
   hosts: satellite

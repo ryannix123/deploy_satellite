@@ -12,6 +12,7 @@ Automates deployment of Red Hat Satellite 6.18 on RHEL 9 with on-premises Red Ha
 
 ```
 deploy_satellite/
+├── setup.sh                            # Bootstrap: installs Ansible + collections, runs playbook
 ├── deploy_sat.yml                      # Main playbook
 ├── inventory.ini                       # Your host inventory
 ├── group_vars/
@@ -33,10 +34,15 @@ deploy_satellite/
 - Network connectivity to Red Hat CDN (or disconnected ISO workflow)
 - FQDN must resolve to the server's IP (DNS or `/etc/hosts`)
 
-### Ansible Control Node
+### Ansible and Collections
 
-- Ansible Core 2.14+
-- Required collections:
+Install Ansible Core and the required collections as RPM packages from the RHEL 9 AppStream repository. This is the recommended approach for disconnected environments and avoids any dependency on Ansible Galaxy.
+
+```bash
+sudo dnf install ansible-core ansible-collection-community-general ansible-collection-ansible-posix ansible-collection-containers-podman
+```
+
+Alternatively, if you have access to Ansible Galaxy or Automation Hub:
 
 ```bash
 ansible-galaxy collection install community.general ansible.posix containers.podman
@@ -97,19 +103,53 @@ ansible-playbook deploy_sat.yml \
 
 ## Quick Start
 
-1. Update your inventory:
+### Running from the Satellite server itself (localhost)
+
+This is the recommended approach for disconnected environments where a separate control node may not be available.
+
+1. Clone the repo on the Satellite host:
+
+```bash
+git clone https://github.com/ryannix123/deploy_satellite.git
+cd deploy_satellite
+```
+
+2. Update `inventory.ini` for localhost:
 
 ```ini
-# inventory.ini
+[satellite]
+localhost ansible_connection=local
+```
+
+3. Set your credentials in the vault (see Credential Setup above).
+
+4. Customize `group_vars/satellite/vars.yml` for your environment — at minimum, set `satellite_fqdn`.
+
+5. Run the bootstrap script — it installs Ansible, the required collections, and runs the playbook in one step:
+
+```bash
+chmod +x setup.sh
+sudo ./setup.sh
+```
+
+To pass extra variables:
+
+```bash
+sudo ./setup.sh -e satellite_fqdn='satellite.prod.example.com' -e required_disk_gb=50
+```
+
+### Running from a remote control node
+
+1. Update `inventory.ini` with the target host:
+
+```ini
 [satellite]
 satellite.example.com ansible_user=ansible
 ```
 
-2. Set your credentials in the vault (see above).
+2. Set your credentials in the vault and customize `vars.yml`.
 
-3. Customize `group_vars/satellite/vars.yml` for your environment — at minimum, set `satellite_fqdn`.
-
-4. Run:
+3. Run:
 
 ```bash
 ansible-playbook -i inventory.ini deploy_sat.yml --ask-vault-pass
@@ -284,6 +324,7 @@ satellite-installer --enable-iop
 |---|---|
 | `/var has only XX GB free (need 100 GB)` | Override with `-e required_disk_gb=50` for demos/home labs. Not recommended for production with many synced repos. |
 | `consumer profile has been deleted from the server` or errata task fails with `Cannot download repomd.xml` | Stale registration (common with snapshots). The playbook auto-remediates this, but manually: `subscription-manager clean && subscription-manager register && subscription-manager attach --auto`. |
+| `couldn't resolve module/action 'containers.podman.podman_login'` | Collections not installed. Run `sudo ./setup.sh` which installs them automatically, or manually: `sudo dnf install ansible-collection-community-general ansible-collection-ansible-posix ansible-collection-containers-podman`. |
 | Installer fails at step ~1000 with `unable to retrieve auth token` | Root podman auth missing. Re-run `podman login` and verify `/root/.config/containers/auth.json` exists. |
 | IOP units stuck in `failed` state | `systemctl reset-failed 'iop-*'` then re-run the installer. |
 | Installer hangs or OOM-killed | Need 20+ GB RAM. Use `--tuning development` for constrained hosts. |
