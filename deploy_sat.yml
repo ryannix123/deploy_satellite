@@ -127,10 +127,14 @@
         mode: u=rwx,g=rs,o=rx
 
     - name: Apply all available errata
-      ansible.builtin.package:
-        update_cache: true
+      ansible.builtin.dnf:
         name: '*'
         state: latest  ## noqa: package-latest
+        exclude:
+          - ansible-core
+          - ansible-core-*
+          - ansible-collection-*
+        update_cache: true
       tags: apply_errata
 
     # ── Registry authentication (persisted for root) ─────────
