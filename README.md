@@ -213,6 +213,48 @@ The Lightspeed Advisor service runs as 13+ Podman Quadlet containers managed by 
 4. Register RHEL hosts using the global registration template (**Hosts > Register Host**) with **Setup Red Hat Lightspeed** set to **Yes (override)**
 5. Configure content views, sync plans, and activation keys
 
+## Deploying a Custom TLS Certificate
+
+Satellite installs with a self-signed certificate by default. To replace it with a certificate signed by your organization's CA, follow this procedure after the initial install.
+
+### Prerequisites
+
+Prepare three files on the Satellite host (e.g., under `/root/satellite_cert/`):
+
+- **Server certificate** — the CN must match your `satellite_fqdn`
+- **Private key** — corresponding to the server certificate
+- **CA bundle** — the full CA chain (intermediate + root)
+
+### Step 1: Validate the certificate
+
+```bash
+katello-certs-check -t satellite \
+  -c /root/satellite_cert/satellite_cert.pem \
+  -k /root/satellite_cert/satellite_cert_key.pem \
+  -b /root/satellite_cert/ca_cert_bundle.pem
+```
+
+If validation passes, the command prints the exact `satellite-installer` command to run. If it fails, check the CN, expiration, and key usage extensions.
+
+### Step 2: Deploy the certificate
+
+```bash
+satellite-installer --scenario satellite \
+  --certs-server-cert "/root/satellite_cert/satellite_cert.pem" \
+  --certs-server-key "/root/satellite_cert/satellite_cert_key.pem" \
+  --certs-server-ca-cert "/root/satellite_cert/ca_cert_bundle.pem"
+```
+
+### Step 3: Verify
+
+Open `https://<satellite_fqdn>` in your browser and inspect the certificate — it should show your CA instead of the Satellite self-signed CA.
+
+### Important notes
+
+- **Do not delete the cert files** after deployment. They are required when upgrading Satellite.
+- If you later renew the certificate, add `--certs-update-server --certs-update-server-ca` to the installer command.
+- Capsule Servers require their own certificates generated with `capsule-certs-generate`. See the [official custom certificate guide](https://docs.redhat.com/en/documentation/red_hat_satellite/6.18/html-single/installing_satellite_server_in_a_connected_network_environment/index#deploying-a-custom-ssl-certificate-to-satellite-server_satellite) for details.
+
 ## Troubleshooting
 
 ```bash

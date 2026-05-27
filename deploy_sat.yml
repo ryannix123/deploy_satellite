@@ -33,14 +33,38 @@
       changed_when: false
       failed_when: false
 
-    - name: Fail if system is not properly registered
-      ansible.builtin.assert:
-        that:
-          - rhsm_identity.rc == 0
-          - "'has been deleted' not in rhsm_identity.stdout"
-        fail_msg: >-
-          This system is not properly registered with Red Hat.
-          Run: subscription-manager clean && subscription-manager register && subscription-manager attach --auto
+    - name: Clean stale RHSM registration
+      ansible.builtin.command:
+        cmd: subscription-manager clean
+      when: >-
+        rhsm_identity.rc != 0 or
+        'has been deleted' in rhsm_identity.stdout
+      changed_when: true
+
+    - name: Re-register system with Red Hat
+      ansible.builtin.command:
+        cmd: >-
+          subscription-manager register
+          --username {{ rh_registry_user }}
+          --password {{ rh_registry_password }}
+          --force
+      when: >-
+        rhsm_identity.rc != 0 or
+        'has been deleted' in rhsm_identity.stdout
+      register: rhsm_register
+      no_log: true
+      failed_when: >-
+        rhsm_register.rc != 0 and
+        'has been registered' not in rhsm_register.stdout
+
+    - name: Confirm RHSM registration is healthy
+      ansible.builtin.command:
+        cmd: subscription-manager identity
+      register: rhsm_verify
+      changed_when: false
+      failed_when: >-
+        rhsm_verify.rc != 0 or
+        'has been deleted' in rhsm_verify.stdout
 
     # ── System requirements ──────────────────────────────────
     - name: Check memory and CPU requirements
