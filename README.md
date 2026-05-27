@@ -1,12 +1,12 @@
-# Red Hat Satellite Deployment Playbook
+# Red Hat Satellite 6.18 Deployment Playbook
 
 <p align="center">
   <img src="https://adfinis-assets.ams3.digitaloceanspaces.com/Logo_Red_Hat_Satellite_A_Standard_RGB_Medium_logo_transparent_3201c6c345.png" alt="Red Hat Satellite" width="400">
 </p>
 
-> **Disclaimer:** This is a community playbook and is **not officially supported by Red Hat**. It is maintained as a personal project and provided as-is. For production deployments, refer to the [official Satellite installation guide](https://docs.redhat.com/en/documentation/red_hat_satellite/).
+> **Disclaimer:** This is a community playbook and is **not officially supported by Red Hat**. It is maintained as a personal project and provided as-is. For production deployments, refer to the [official Satellite 6.18 installation guide](https://docs.redhat.com/en/documentation/red_hat_satellite/6.18/html-single/installing_satellite_server_on_red_hat_enterprise_linux/index).
 
-Automates deployment of Red Hat Satellite (6.18 and 6.19) on RHEL 9 with on-premises Red Hat Lightspeed Advisor (formerly Insights) for air-gapped environments.
+Automates deployment of Red Hat Satellite 6.18 on RHEL 9 with on-premises Red Hat Lightspeed Advisor (formerly Insights) for air-gapped environments.
 
 ## Repository Layout
 
@@ -120,20 +120,20 @@ ansible-playbook -i inventory.ini deploy_sat.yml --ask-vault-pass
 ### Pre-Tasks
 
 1. **Credential validation** — asserts that admin password and registry credentials are present and not placeholders.
-2. **RHSM registration** — verifies the system is registered with Red Hat and the consumer profile hasn't been deleted server-side. Catches stale registrations from snapshots or reprovisioned hosts.
+2. **RHSM registration** — verifies the system is registered with Red Hat and the consumer profile hasn't been deleted server-side. Auto-remediates stale registrations (common with snapshots) by cleaning and re-registering using the vaulted portal credentials. Credentials are protected with `no_log`.
 3. **System checks** — validates RAM, CPU, and `/var` disk space against Satellite 6.18 minimums.
-3. **Hostname and DNS** — sets the FQDN, writes `/etc/hosts`, and verifies resolution.
-4. **Persistent journal** — creates `/var/log/journal` so systemd journal logs survive reboots (essential for debugging IOP Quadlet failures after a reboot).
-5. **System update and reboot** — applies all available errata and reboots if the kernel or core libraries were updated. Ensures a clean baseline before Satellite installation.
-6. **Registry authentication** — runs `podman login` as root and persists the auth token to `/root/.config/containers/auth.json`. This is critical because the IOP containers are managed by systemd Quadlet units that run as root. Without persistent auth at this path, the Quadlet units fail to pull images and hit their restart limit.
+4. **Hostname and DNS** — sets the FQDN, writes `/etc/hosts`, and verifies resolution.
+5. **Persistent journal** — creates `/var/log/journal` so systemd journal logs survive reboots (essential for debugging IOP Quadlet failures after a reboot).
+6. **System update and reboot** — applies all available errata and reboots if the kernel or core libraries were updated. Ensures a clean baseline before Satellite installation.
+7. **Registry authentication** — runs `podman login` as root and persists the auth token to `/root/.config/containers/auth.json`. This is critical because the IOP containers are managed by systemd Quadlet units that run as root. Without persistent auth at this path, the Quadlet units fail to pull images and hit their restart limit.
 
 ### Main Tasks
 
 1. Disables all RHSM repos and enables only the Satellite 6.18 and RHEL 9 repos (architecture-aware).
 2. Installs `satellite` and `chrony` packages.
-3. Configures hostname, `/etc/hosts`, firewall, and NTP.
+3. Configures firewall and NTP.
 4. Runs `satellite-installer` with admin credentials, tuning profile, and Ansible/Discovery/rh-cloud plugins. Idempotent — skips if Satellite is already installed.
-5. **Pre-pulls all 13 IOP container images** from `registry.redhat.io` so the systemd Quadlet units start instantly.
+5. **Pre-pulls all 14 IOP container images** from `registry.redhat.io` so the systemd Quadlet units start instantly.
 6. **Resets any failed IOP systemd units** from prior runs (they hit a 5-attempt restart limit and get stuck in `failed` state).
 7. Runs `satellite-installer --enable-iop` to enable the on-prem Lightspeed Advisor.
 8. Waits for all Satellite services to report healthy.
@@ -170,17 +170,6 @@ All variables are in `group_vars/satellite/vars.yml`. Override any value with `-
 
 ```bash
 ansible-playbook deploy_sat.yml --ask-vault-pass \
-  -e satellite_fqdn='satellite.prod.example.com' \
-  -e satellite_tuning='default'
-```
-
-### Deploy Satellite 6.19
-
-For greenfield deployments, Satellite 6.19 adds MCP server support for AI-assisted management, Insights Compliance running locally, and image-mode RHEL support. Override the version at runtime:
-
-```bash
-ansible-playbook deploy_sat.yml --ask-vault-pass \
-  -e satellite_version=6.19 \
   -e satellite_fqdn='satellite.prod.example.com' \
   -e satellite_tuning='default'
 ```
@@ -294,7 +283,7 @@ satellite-installer --enable-iop
 | Symptom | Fix |
 |---|---|
 | `/var has only XX GB free (need 100 GB)` | Override with `-e required_disk_gb=50` for demos/home labs. Not recommended for production with many synced repos. |
-| `consumer profile has been deleted from the server` or errata task fails with `Cannot download repomd.xml` | Stale registration (common with snapshots). Run `subscription-manager clean && subscription-manager register && subscription-manager attach --auto`. |
+| `consumer profile has been deleted from the server` or errata task fails with `Cannot download repomd.xml` | Stale registration (common with snapshots). The playbook auto-remediates this, but manually: `subscription-manager clean && subscription-manager register && subscription-manager attach --auto`. |
 | Installer fails at step ~1000 with `unable to retrieve auth token` | Root podman auth missing. Re-run `podman login` and verify `/root/.config/containers/auth.json` exists. |
 | IOP units stuck in `failed` state | `systemctl reset-failed 'iop-*'` then re-run the installer. |
 | Installer hangs or OOM-killed | Need 20+ GB RAM. Use `--tuning development` for constrained hosts. |
