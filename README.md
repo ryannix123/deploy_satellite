@@ -36,16 +36,36 @@ deploy_satellite/
 
 ### Ansible and Collections
 
-Install Ansible Core and the required collections as RPM packages from the RHEL 9 AppStream repository. This is the recommended approach for disconnected environments and avoids any dependency on Ansible Galaxy.
+The playbook requires `ansible-core` and three Ansible collections. The `setup.sh` bootstrap script handles this automatically, but here are the manual options:
+
+**Option 1: RPM packages (requires AAP repo)**
+
+If the Ansible Automation Platform repository is enabled (e.g., `ansible-automation-platform-2.5-for-rhel-9-x86_64-rpms`):
 
 ```bash
 sudo dnf install ansible-core ansible-collection-community-general ansible-collection-ansible-posix ansible-collection-containers-podman
 ```
 
-Alternatively, if you have access to Ansible Galaxy or Automation Hub:
+**Option 2: Ansible Galaxy (requires internet)**
 
 ```bash
+sudo dnf install ansible-core
 ansible-galaxy collection install community.general ansible.posix containers.podman
+```
+
+**Option 3: Offline install (fully disconnected)**
+
+On a connected machine, download the collection tarballs:
+
+```bash
+mkdir collections && cd collections
+ansible-galaxy collection download community.general ansible.posix containers.podman
+```
+
+Transfer the `collections/` directory to the Satellite host, then install locally:
+
+```bash
+ansible-galaxy collection install ./collections/*.tar.gz
 ```
 
 ### Passwordless Sudo
