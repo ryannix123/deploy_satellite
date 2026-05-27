@@ -133,35 +133,6 @@
         state: latest  ## noqa: package-latest
       tags: apply_errata
 
-    - name: Check if reboot is required after updates
-      ansible.builtin.command: dnf needs-restarting -r
-      register: reboot_needed
-      changed_when: reboot_needed.rc != 0
-      failed_when: false
-
-    - name: Reboot if kernel or core libraries were updated (remote)
-      ansible.builtin.reboot:
-        reboot_timeout: 600
-      when:
-        - reboot_needed.rc is defined
-        - reboot_needed.rc == 1
-        - ansible_connection != 'local'
-      tags: autoreboot
-
-    - name: Reboot if kernel or core libraries were updated (localhost)
-      when:
-        - reboot_needed.rc is defined
-        - reboot_needed.rc == 1
-        - ansible_connection == 'local'
-      tags: autoreboot
-      block:
-        - name: Rebooting — re-run setup.sh after the system comes back
-          ansible.builtin.fail:
-            msg: >-
-              Kernel or core libraries were updated and a reboot is required.
-              Please reboot now with 'sudo reboot', then re-run setup.sh.
-              The playbook is idempotent — it will skip completed tasks.
-
     # ── Registry authentication (persisted for root) ─────────
     - name: Ensure persistent podman auth directory exists for root
       ansible.builtin.file:
@@ -286,9 +257,16 @@
       changed_when: false
 
   post_tasks:
+    - name: Check if reboot is required after updates
+      ansible.builtin.command: dnf needs-restarting -r
+      register: reboot_needed
+      changed_when: false
+      failed_when: false
+
     - name: Display Satellite completion info
       ansible.builtin.debug:
         msg: >-
           Satellite deployment complete.
           URL: https://{{ satellite_fqdn }}
           Lightspeed Advisor: {{ 'enabled' if enable_lightspeed_advisor else 'disabled' }}
+          {{ 'NOTE: A reboot is recommended — kernel or core libraries were updated during errata application.' if reboot_needed.rc == 1 else '' }}
