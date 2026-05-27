@@ -139,13 +139,28 @@
       changed_when: reboot_needed.rc != 0
       failed_when: false
 
-    - name: Reboot if kernel or core libraries were updated
+    - name: Reboot if kernel or core libraries were updated (remote)
       ansible.builtin.reboot:
         reboot_timeout: 600
       when:
         - reboot_needed.rc is defined
         - reboot_needed.rc == 1
+        - ansible_connection != 'local'
       tags: autoreboot
+
+    - name: Reboot if kernel or core libraries were updated (localhost)
+      when:
+        - reboot_needed.rc is defined
+        - reboot_needed.rc == 1
+        - ansible_connection == 'local'
+      tags: autoreboot
+      block:
+        - name: Rebooting — re-run setup.sh after the system comes back
+          ansible.builtin.fail:
+            msg: >-
+              Kernel or core libraries were updated and a reboot is required.
+              Please reboot now with 'sudo reboot', then re-run setup.sh.
+              The playbook is idempotent — it will skip completed tasks.
 
     # ── Registry authentication (persisted for root) ─────────
     - name: Ensure persistent podman auth directory exists for root
