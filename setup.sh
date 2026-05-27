@@ -21,7 +21,7 @@ fi
 # Falls back to ansible-galaxy if RPMs are unavailable.
 echo "Installing required Ansible collections..."
 echo "Enabling Ansible Automation Platform repository..."
-subscription-manager repos --enable ansible-automation-platform-2.5-for-rhel-9-x86_64-rpms 2>/dev/null || true
+subscription-manager repos --enable ansible-automation-platform-2.7-for-rhel-9-x86_64-rpms 2>/dev/null || true
 
 if dnf install -y \
   ansible-collection-community-general \

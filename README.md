@@ -40,7 +40,7 @@ The playbook requires `ansible-core` and three Ansible collections. The `setup.s
 
 **Option 1: RPM packages (requires AAP repo)**
 
-If the Ansible Automation Platform repository is enabled (e.g., `ansible-automation-platform-2.5-for-rhel-9-x86_64-rpms`):
+If the Ansible Automation Platform repository is enabled (e.g., `ansible-automation-platform-2.7-for-rhel-9-x86_64-rpms`):
 
 ```bash
 sudo dnf install ansible-core ansible-collection-community-general ansible-collection-ansible-posix ansible-collection-containers-podman
