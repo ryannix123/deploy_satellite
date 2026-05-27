@@ -15,6 +15,7 @@ deploy_satellite/
 ├── setup.sh                            # Bootstrap: installs Ansible + collections, runs playbook
 ├── deploy_sat.yml                      # Main playbook
 ├── inventory.ini                       # Your host inventory
+├── collections/                        # Bundled collection tarballs (for disconnected installs)
 ├── group_vars/
 │   └── satellite/
 │       ├── vars.yml                    # Non-sensitive defaults
@@ -53,19 +54,17 @@ sudo dnf install ansible-core
 ansible-galaxy collection install community.general ansible.posix containers.podman
 ```
 
-**Option 3: Offline install (fully disconnected)**
+**Option 3: Bundled tarballs (fully disconnected)**
 
-On a connected machine, download the collection tarballs:
+The `collections/` directory in this repo contains pre-downloaded collection tarballs. The `setup.sh` script detects and installs them automatically — no internet required.
 
-```bash
-mkdir collections && cd collections
-ansible-galaxy collection download community.general ansible.posix containers.podman
-```
-
-Transfer the `collections/` directory to the Satellite host, then install locally:
+To refresh the bundled tarballs (run on a connected machine):
 
 ```bash
-ansible-galaxy collection install ./collections/*.tar.gz
+mkdir -p collections
+ansible-galaxy collection download community.general ansible.posix containers.podman -p collections/
+git add collections/
+git commit -m "Update bundled collection tarballs"
 ```
 
 ### Passwordless Sudo

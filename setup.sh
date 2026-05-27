@@ -17,19 +17,18 @@ if ! command -v ansible-playbook &>/dev/null; then
 fi
 
 # Install required Ansible collections.
-# Enable the AAP repo for RPM-packaged collections, then install.
-# Falls back to ansible-galaxy if RPMs are unavailable.
+# Priority: 1) Local tarballs (bundled in repo), 2) RPM packages (AAP repo), 3) Galaxy
 echo "Installing required Ansible collections..."
-echo "Enabling Ansible Automation Platform repository..."
-subscription-manager repos --enable ansible-automation-platform-2.7-for-rhel-9-x86_64-rpms 2>/dev/null || true
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if dnf install -y \
-  ansible-collection-community-general \
-  ansible-collection-ansible-posix \
-  ansible-collection-containers-podman 2>/dev/null; then
+if ls "${SCRIPT_DIR}"/collections/*.tar.gz &>/dev/null; then
+  echo "Installing collections from local tarballs..."
+  ansible-galaxy collection install "${SCRIPT_DIR}"/collections/*.tar.gz
+elif subscription-manager repos --enable ansible-automation-platform-2.7-for-rhel-9-x86_64-rpms 2>/dev/null && \
+     dnf install -y ansible-collection-community-general ansible-collection-ansible-posix ansible-collection-containers-podman 2>/dev/null; then
   echo "Collections installed via RPM."
 else
-  echo "RPM packages not available. Falling back to ansible-galaxy..."
+  echo "Local tarballs and RPM packages not available. Falling back to ansible-galaxy..."
   ansible-galaxy collection install community.general ansible.posix containers.podman
 fi
 
