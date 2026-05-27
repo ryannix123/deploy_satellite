@@ -17,9 +17,12 @@ if ! command -v ansible-playbook &>/dev/null; then
 fi
 
 # Install required Ansible collections.
-# Try RPM packages first (available if AAP repo is enabled),
-# then fall back to ansible-galaxy (requires internet to galaxy.ansible.com).
+# Enable the AAP repo for RPM-packaged collections, then install.
+# Falls back to ansible-galaxy if RPMs are unavailable.
 echo "Installing required Ansible collections..."
+echo "Enabling Ansible Automation Platform repository..."
+subscription-manager repos --enable ansible-automation-platform-2.5-for-rhel-9-x86_64-rpms 2>/dev/null || true
+
 if dnf install -y \
   ansible-collection-community-general \
   ansible-collection-ansible-posix \
