@@ -1,5 +1,7 @@
 ---
-# Deploy Red Hat Satellite 6.18 with Lightspeed Advisor
+# Deploy Red Hat Satellite with Lightspeed Advisor
+# Supports Satellite 6.18 and 6.19 — set satellite_version in
+# group_vars/satellite/vars.yml or override with -e satellite_version=6.19
 #
 # Variables are loaded from group_vars/satellite/vars.yml and vault.yml.
 # Override any value at runtime with -e:
@@ -156,6 +158,14 @@
         username: "{{ rh_registry_user }}"
         password: "{{ rh_registry_password }}"
         authfile: /root/.config/containers/auth.json
+
+    - name: Log into Red Hat Registry (foreman auth for 6.19+)
+      when: satellite_version is version('6.19', '>=')
+      containers.podman.podman_login:
+        registry: registry.redhat.io
+        username: "{{ rh_registry_user }}"
+        password: "{{ rh_registry_password }}"
+        authfile: /etc/foreman/registry-auth.json
 
   tasks:
     # ── Repository setup ─────────────────────────────────────
