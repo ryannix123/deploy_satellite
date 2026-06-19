@@ -1,203 +1,216 @@
 # Red Hat Satellite Upgrade Guide
 
-This guide covers upgrading Red Hat Satellite through minor versions (e.g., 6.16 → 6.17 → 6.18) and applying z-stream patch updates within a version. Always use `satellite-maintain` for both — never run raw `dnf update` against Satellite packages.
+This guide covers upgrading Red Hat Satellite through minor versions (y-stream, e.g. 6.18 → 6.19) and applying z-stream patch updates within a version. Always use `satellite-maintain` for both — never run raw `dnf update` against Satellite packages.
+
+> **Verified on a live 6.18.5 → 6.19.1 upgrade.** The command syntax below reflects what the current `satellite-maintain` build actually accepts, which differs from some published examples (see the notes on `--target-version` and `container-podman-login` below).
+
+## Understanding the Version Number (X.Y.Z)
+
+For `6.18.5`:
+
+| Field | Example | Meaning |
+|---|---|---|
+| **X** | 6 | Major version |
+| **Y** | 18 | Minor / **y-stream** — where new features land. 6.18 → 6.19 is a y-stream **upgrade**. |
+| **Z** | 5 | **z-stream** — the maintenance counter. Bug fixes and security errata only, not features. |
+
+The Z is an aggregation of errata: qualified Critical/Important security advisories (RHSAs) and Urgent/selected High-priority bug-fix advisories (RHBAs). So `6.18.5` means "Satellite 6.18 with five rounds of accumulated maintenance and security fixes." New functionality waits for the next y-stream. Note that Lightspeed/Insights *rule* updates flow as content the on-premises IOP consumes; they are not tied to the z-stream number.
+
+- **z-stream update** (6.18.4 → 6.18.5): `satellite-maintain update`
+- **y-stream upgrade** (6.18 → 6.19): `satellite-maintain upgrade`
 
 ## Playbook Files
 
 | File | Purpose |
 |---|---|
-| `satellite-upgrade.yml` | Main upgrade playbook — validates versions, backs up, loops through hops, enables Lightspeed Advisor |
-| `satellite-upgrade-hop.yml` | Included task file — handles a single version hop (repo swap, pre-check, upgrade, reboot, health check) |
+| `upgrade_satellite_6.19.yml` | Upgrade playbook — verifies version (N-1), pre-seeds Hammer credentials, backs up, enables the maintenance repo, self-upgrades the tooling, verifies registry login, runs the pre-check and upgrade with the correct whitelist, verifies health |
 
-## Upgrade Paths
+## Upgrade Path and Compatibility
 
-Satellite only supports upgrading one minor version at a time. If you need to jump multiple versions, you must step through each one sequentially:
+- **Direct path:** 6.18 → 6.19 is a single y-stream hop. No intermediate version required.
+- **N-1 policy:** the Server can only be upgraded from the immediately preceding minor version.
+- **Capsule compatibility:** after the Server is on 6.19, Capsules at **6.18 and 6.17** keep working, so they can be upgraded later in their own maintenance windows.
 
-| Current Version | Target | Path |
+| Current | Target | Path |
 |---|---|---|
-| 6.16 | 6.18 | 6.16 → 6.17 → 6.18 |
-| 6.17 | 6.18 | 6.17 → 6.18 (direct) |
+| 6.18 | 6.19 | 6.18 → 6.19 (direct) |
+| 6.17 | 6.19 | 6.17 → 6.18 → 6.19 |
+| 6.16 | 6.19 | 6.16 → 6.17 → 6.18 → 6.19 |
 
-Capsule Servers are compatible one version behind. After upgrading Satellite to 6.18, Capsules on 6.17 or 6.16 continue to work. This lets you upgrade Capsules in separate maintenance windows.
+> **Tip:** Use the [Red Hat Satellite Upgrade Helper](https://access.redhat.com/labs/satelliteupgradehelper/) for instructions matched to your exact version.
 
-> **Tip:** Use the [Red Hat Satellite Upgrade Helper](https://access.redhat.com/labs/satelliteupgradehelper/) to generate step-by-step instructions customized for your current version.
-
-## Quick Start
-
-```bash
-# Multi-hop: 6.16 → 6.17 → 6.18
-ansible-playbook satellite-upgrade.yml --ask-vault-pass \
-  -e current_version=6.16 \
-  -e target_version=6.18
-
-# Single hop: 6.17 → 6.18
-ansible-playbook satellite-upgrade.yml --ask-vault-pass \
-  -e current_version=6.17 \
-  -e target_version=6.18
-
-# Skip Lightspeed Advisor
-ansible-playbook satellite-upgrade.yml --ask-vault-pass \
-  -e current_version=6.17 \
-  -e target_version=6.18 \
-  -e enable_lightspeed_advisor=false
-```
-
-The playbook uses Red Hat Registry credentials from `group_vars/satellite/vault.yml` (the same vault used by the deploy playbook) to pre-pull IOP container images. If you haven't set up the vault yet, see the deploy playbook's README.
-
-## Before You Begin
-
-### 1. Review release notes
-
-Read the release notes for every version you'll pass through. Pay attention to deprecated features, removed API endpoints, and Hammer CLI changes that might affect your integrations.
-
-- [Satellite 6.17 Release Notes](https://docs.redhat.com/en/documentation/red_hat_satellite/6.17/html-single/release_notes/index)
-- [Satellite 6.18 Release Notes](https://docs.redhat.com/en/documentation/red_hat_satellite/6.18/html/release_notes/index)
-
-### 2. Back up your Satellite
-
-The playbook creates an online backup automatically. For a more consistent backup (services will be stopped), run manually before the playbook:
+## Quick Start (Ansible)
 
 ```bash
-satellite-maintain backup offline /var/satellite-backup
+# Connected (default)
+ansible-playbook -i inventory.ini upgrade_satellite_6.19.yml --ask-vault-pass
+
+# Disconnected / air-gapped (6.19 content already staged from ISO locally)
+ansible-playbook -i inventory.ini upgrade_satellite_6.19.yml --ask-vault-pass \
+  -e satellite_connected=false
+
+# Skip the backup (NOT recommended; only with a fresh VM snapshot)
+ansible-playbook -i inventory.ini upgrade_satellite_6.19.yml --ask-vault-pass \
+  -e take_backup=false
 ```
 
-### 3. Check current version and health
+The playbook reads the Satellite admin password and Red Hat Registry credentials from `group_vars/satellite/vault.yml` (the same vault used by the deploy playbook).
+
+## Manual Upgrade Steps
+
+> **Run as root** (or prefix each command with `sudo`). Run inside `tmux` so a dropped SSH session does not interrupt the upgrade.
 
 ```bash
-# Confirm your current version
-rpm -q satellite --qf '%{VERSION}\n'
+# 1. Enable the 6.19 maintenance repository (system must be registered)
+subscription-manager repos --enable satellite-maintenance-6.19-for-rhel-9-x86_64-rpms
 
-# Run a full health check
-satellite-maintain health check
+# 2. Self-upgrade the maintenance tooling (run twice if only the tooling updated)
+satellite-maintain self-upgrade
 
-# Run upgrade-specific pre-checks (use the TARGET version)
-satellite-maintain upgrade check --target-version 6.17
+# 3. Pre-upgrade check — NO version argument; target is derived from the enabled repo
+satellite-maintain upgrade check -y
+
+# 4. Run the upgrade
+satellite-maintain upgrade run -y
+
+# 5. Reboot if the kernel was updated
+dnf needs-restarting -r || systemctl reboot
 ```
 
-Address any errors or warnings before proceeding.
-
-### 4. Test with --noop (optional but recommended)
-
-Check which config files the installer would overwrite:
-
-```bash
-satellite-installer --noop
-```
-
-If you've made manual edits to files managed by `satellite-installer` (e.g., DNS or DHCP configs), back them up first. The installer will overwrite them.
-
-### 5. Use tmux
-
-Upgrades can take 30 minutes to 2 hours depending on your environment. Always run inside `tmux` so you can reattach if your SSH session drops:
-
-```bash
-tmux new -s satellite-upgrade
-```
+> **Important syntax note:** this build of `satellite-maintain` does **not** accept `--target-version`. It derives the target from the enabled `satellite-maintenance-6.19` repository. Passing `--target-version 6.19` returns `Unrecognised option`. Use the bare `-y` form. On first run, the tooling prompts once for the **Satellite admin password** (Hammer setup) and saves it to `/etc/foreman-maintain/foreman-maintain-hammer.yml`.
 
 ## What the Playbook Does
 
 ### Pre-Tasks
 
-1. **Validates version inputs** — confirms `current_version` and `target_version` are valid and in the right order.
-2. **Builds the upgrade path** — computes the sequential hops (e.g., 6.16 → 6.17 → 6.18).
-3. **Verifies installed version** — checks `rpm -q satellite` matches the declared `current_version`.
-4. **Creates a backup** — runs `satellite-maintain backup online` before touching anything.
+1. **Pre-seeds Hammer credentials** to `/etc/foreman-maintain/foreman-maintain-hammer.yml` so the upgrade never blocks on the interactive password prompt.
+2. **Verifies the source version** satisfies the N-1 rule (on 6.18.z, below 6.19).
+3. **Confirms registration** (connected mode) — repos cannot be enabled on an unregistered system.
+4. **Establishes registry auth** to `/etc/foreman/registry-auth.json` and **verifies the login** with `podman login --get-login`.
+5. **Ensures `tmux` is installed.**
 
-### Per-Hop Tasks (satellite-upgrade-hop.yml)
+### Upgrade Tasks
 
-For each version hop (e.g., 6.16 → 6.17), the included task file:
+1. **Backup** — offline backup before any changes (toggle with `-e take_backup=false`).
+2. **z-stream current** — `satellite-maintain update run` so the box is on the latest 6.18.z first (connected).
+3. **Enable the maintenance repo** — `satellite-maintenance-6.19-...` via the `rhsm_repository` module (connected).
+4. **Self-upgrade** the `satellite-maintain` tooling.
+5. **Assemble the whitelist** — adds `container-podman-login` only when the registry login was verified, and the disconnected repo checks only in disconnected mode.
+6. **Pre-flight check** — `satellite-maintain upgrade check -y` (plus whitelist if needed).
+7. **Upgrade** — `satellite-maintain upgrade run -y` (plus whitelist if needed).
 
-1. Enables the target version repositories via `satellite-maintain repository enable`.
-2. Updates `rubygem-foreman_maintain` to the version that knows about the target.
-3. Runs `satellite-maintain upgrade check` pre-flight validation.
-4. Runs `satellite-maintain upgrade run` (handles stopping services, updating packages, running the installer, applying DB migrations, restarting services).
-5. Reboots if the kernel was updated.
-6. Verifies all services are healthy before proceeding to the next hop.
+### Post-Tasks
 
-### Post-Upgrade Tasks
+1. **Waits for services** to report healthy.
+2. **Confirms the new version** via `rpm -q satellite`.
+3. **Checks whether a reboot** is required and reports it.
+4. Prints a summary with next steps (manifest refresh, content sync, `insights-client --register --force` on hosts, Capsule upgrades later).
 
-1. **Registry authentication** — persists `podman login` to `/root/.config/containers/auth.json` (required for IOP Quadlet units that run as root).
-2. **Pre-pulls all 14 IOP container images** so the systemd Quadlet units start instantly.
-3. **Resets failed IOP systemd units** from any prior attempts.
-4. **Enables Lightspeed Advisor** with `satellite-installer --enable-iop`.
-5. **Refreshes the subscription manifest**.
+## Disconnected (Air-Gapped) Upgrades
+
+The flow is the same, but content comes from local media and the CDN-dependent checks are skipped:
+
+1. Stage the 6.19 binary DVD/ISO content locally and point repositories at it; ensure RHEL 9 BaseOS/AppStream is available locally too.
+2. Make the Lightspeed/IOP container images available locally (bundled on the ISO or pre-pulled), since the connected path would otherwise pull them from `registry.redhat.io`.
+3. Run with the disconnected whitelist:
+
+```bash
+satellite-maintain upgrade check -y --whitelist="repositories-validate,repositories-setup"
+satellite-maintain upgrade run   -y --whitelist="repositories-validate,repositories-setup"
+```
+
+Run from a directory without a `config/` subdirectory (e.g. `/root`) to avoid a scenario-not-found error.
 
 ## Upgrading Capsule Servers
 
-After the Satellite Server is upgraded, upgrade each Capsule:
+After the Server is on 6.19, upgrade each Capsule in its own window (6.17/6.18 Capsules remain compatible):
 
 ```bash
-# On each Capsule Server
-dnf update -y rubygem-foreman_maintain
-satellite-maintain upgrade run --target-version 6.18
+subscription-manager repos --enable satellite-maintenance-6.19-for-rhel-9-x86_64-rpms
+satellite-maintain self-upgrade
+satellite-maintain upgrade check -y
+satellite-maintain upgrade run   -y
 ```
 
-Capsules can be upgraded in separate maintenance windows. Versions 6.17 and 6.16 remain compatible with a 6.18 Satellite Server.
+Restore any manual DNS/DHCP edits from backup afterward.
 
 ## Applying Patch Updates (Z-Stream)
 
-Z-stream updates (e.g., 6.18.1 → 6.18.2) are applied with `satellite-maintain update`, not `upgrade`:
+Z-stream updates (e.g. 6.19.1 → 6.19.2) use `update`, not `upgrade`:
 
 ```bash
-# Back up first
-satellite-maintain backup online /var/satellite-backup
-
-# Check readiness
+satellite-maintain backup offline /var/backup/satellite
 satellite-maintain update check
-
-# Apply the update
 satellite-maintain update run
 ```
 
-> **Important:** Always use `satellite-maintain update run` for patching — never raw `dnf update`. The `satellite-maintain` wrapper ensures services are stopped and restarted correctly and that the installer runs any necessary migrations.
+> Always use `satellite-maintain update run` for patching — never raw `dnf update`. The wrapper stops and restarts services correctly and runs any necessary migrations.
 
 ## Troubleshooting
+
+### `container-podman-login` check fails (often a false positive)
+
+The pre-upgrade check verifies Satellite can authenticate to `registry.redhat.io` to pull the 6.19 Lightspeed/IOP images. In proxied or firewall-filtered networks this can fail **even when authentication is valid**:
+
+```
+The following steps ended up in failing state:
+  [container-podman-login]
+```
+
+First confirm the login genuinely works:
+
+```bash
+podman login registry.redhat.io
+podman login --get-login registry.redhat.io   # returns your username if valid
+```
+
+If `--get-login` returns your username, it is a false positive — whitelist that one step:
+
+```bash
+satellite-maintain upgrade check -y --whitelist="container-podman-login"
+satellite-maintain upgrade run   -y --whitelist="container-podman-login"
+```
+
+During the run, watch for **`Update IoP containers: [OK]`** — that is the real image pull succeeding, confirming the whitelist was safe. **Only whitelist after verifying the login**; if `--get-login` does not return a username, fix the auth first rather than skipping the check.
+
+### `--target-version` is not recognized
+
+This build derives the target from the enabled maintenance repository. Run `satellite-maintain self-upgrade` (twice if it only updated the tooling), then use the bare `satellite-maintain upgrade check -y`.
 
 ### Log locations
 
 ```bash
-# Installer / upgrade log (primary)
-tail -f /var/log/foreman-installer/satellite.log
-
-# Foreman application log
-tail -f /var/log/foreman/production.log
-
-# Candlepin (subscription management)
-tail -f /var/log/candlepin/candlepin.log
-
-# Pulp (content management)
-journalctl -u pulpcore-api
-
-# IOP container status
-podman ps -a --filter 'name=iop-*'
-systemctl list-units 'iop-*' --all
+tail -f /var/log/foreman-installer/satellite.log   # primary upgrade log
+tail -f /var/log/foreman/production.log            # Foreman application
+journalctl -u pulpcore-api                         # content
+podman ps -a --filter 'name=iop-*'                 # IOP container status
 ```
 
-### Common issues
+### Other common issues
 
 | Symptom | Fix |
 |---|---|
-| IOP units fail with `unable to retrieve auth token` | Root podman auth missing. Verify `/root/.config/containers/auth.json` exists. Re-run `podman login --authfile /root/.config/containers/auth.json registry.redhat.io`. |
-| IOP units stuck in `failed` state | `systemctl reset-failed 'iop-*'` then re-run `satellite-installer --enable-iop`. |
-| Upgrade fails on package dependencies (disconnected) | `satellite-maintain upgrade run --target-version 6.18 --whitelist="repositories-validate,repositories-setup"` then manually resolve missing packages. |
-| Services won't start after upgrade | `satellite-maintain service restart && satellite-maintain health check` |
-| Lost SSH during upgrade | `tmux attach -t satellite-upgrade` — check `/var/log/foreman-installer/satellite.log` for `Success!` |
+| IOP units fail with `unable to retrieve auth token` | Re-establish auth: `podman login --authfile /etc/foreman/registry-auth.json registry.redhat.io` and `podman login registry.redhat.io`. |
+| IOP units stuck in `failed` state | `systemctl reset-failed 'iop-*'` then `satellite-installer --enable-iop`. |
+| Upgrade prompts for a password | The Satellite admin password for Hammer setup; saved after first entry. The playbook pre-seeds it. |
+| Disconnected dependency failures | Add `--whitelist="repositories-validate,repositories-setup"`, then resolve missing packages from the ISO. |
+| Lost SSH during upgrade | `tmux attach` — check `/var/log/foreman-installer/satellite.log` for completion. |
 
 ## Best Practices
 
-1. **Always back up before upgrading** — offline backups are more reliable than online.
-2. **Test on a clone first** — Satellite supports cloning your server for upgrade testing.
-3. **Step through versions sequentially** — never skip minor versions.
-4. **Use tmux** — long-running upgrades will outlast your SSH session.
-5. **Run `--noop` first** — catch config file conflicts before the real upgrade.
-6. **Upgrade Satellite before Capsules** — Capsules are backward-compatible by one version.
-7. **Review release notes** — breaking changes are documented; don't skip this.
-8. **Schedule adequate downtime** — plan for 30 minutes to 2 hours per hop depending on data volume.
+1. **Be current on the source z-stream first** (`satellite-maintain update run` on 6.18) before the y-stream upgrade.
+2. **Always back up** — offline backups are more reliable than online.
+3. **Test on a clone or snapshot first.**
+4. **Step through minor versions sequentially** — never skip a y-stream.
+5. **Use tmux** — upgrades outlast SSH sessions.
+6. **Upgrade the Server before Capsules** — Capsules are backward-compatible by one version.
+7. **Verify the registry login before whitelisting** the podman-login check.
+8. **Review release notes** and run the Upgrade Helper for your exact version.
 
 ## References
 
-- [Upgrading Connected Satellite to 6.18](https://docs.redhat.com/en/documentation/red_hat_satellite/6.18/html-single/upgrading_connected_red_hat_satellite_to_6.18/index)
-- [Upgrading Disconnected Satellite to 6.18](https://docs.redhat.com/en/documentation/red_hat_satellite/6.18/html-single/upgrading_disconnected_red_hat_satellite_to_6.18/index)
-- [Updating Red Hat Satellite (z-stream)](https://docs.redhat.com/en/documentation/red_hat_satellite/6.18/html-single/updating_red_hat_satellite/index)
+- [Upgrading Connected Satellite to 6.19](https://docs.redhat.com/en/documentation/red_hat_satellite/6.19/html-single/upgrading_connected_red_hat_satellite_to_6.19/index)
+- [Upgrading Disconnected Satellite to 6.19](https://docs.redhat.com/en/documentation/red_hat_satellite/6.19/html-single/upgrading_disconnected_red_hat_satellite_to_6.19/index)
+- [Updating Red Hat Satellite (z-stream)](https://docs.redhat.com/en/documentation/red_hat_satellite/6.19/html-single/updating_red_hat_satellite/index)
 - [Satellite Upgrade Helper (interactive)](https://access.redhat.com/labs/satelliteupgradehelper/)
 - [Satellite Product Life Cycle](https://access.redhat.com/support/policy/updates/satellite)
