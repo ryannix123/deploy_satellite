@@ -1,0 +1,238 @@
+---
+# Upgrade Red Hat Satellite 6.18 -> 6.19 (y-stream)
+#
+# Orchestrates the satellite-maintain upgrade flow with pre-flight safety:
+# verifies the current version, takes an offline backup, enables the target
+# repositories, self-upgrades the tooling, runs the upgrade check, then the
+# upgrade itself. Supports both connected and disconnected (air-gapped) modes.
+#
+# Run ON the Satellite Server (localhost) or against it over SSH.
+#
+#   # Connected (default):
+#   ansible-playbook -i inventory.ini upgrade_satellite_6.19.yml --ask-vault-pass
+#
+#   # Disconnected / air-gapped (6.19 content already staged from ISO locally):
+#   ansible-playbook -i inventory.ini upgrade_satellite_6.19.yml --ask-vault-pass \
+#     -e satellite_connected=false
+#
+#   # Skip the backup (NOT recommended; only if you have a fresh VM snapshot):
+#   ansible-playbook -i inventory.ini upgrade_satellite_6.19.yml --ask-vault-pass \
+#     -e take_backup=false
+#
+- name: Upgrade Red Hat Satellite to 6.19
+  hosts: satellite
+  become: true
+
+  vars:
+    target_version: "6.19"
+    source_version: "6.18"
+    satellite_connected: true
+    take_backup: true
+    backup_dir: "/var/backup/satellite-pre-{{ target_version }}"
+    # Disconnected upgrades skip the CDN-dependent repository checks.
+    disconnected_whitelist: "repositories-validate,repositories-setup"
+    # satellite-maintain derives the target version from the enabled
+    # maintenance repository; this build does not accept --target-version.
+
+  pre_tasks:
+    # -- Pre-seed Hammer credentials so the upgrade never prompts --
+    # satellite-maintain configures Hammer CLI on first run and would
+    # otherwise prompt interactively for the Satellite admin password,
+    # which hangs an automated run. Seed the file ahead of time.
+    - name: Pre-seed satellite-maintain Hammer credentials
+      ansible.builtin.copy:
+        dest: /etc/foreman-maintain/foreman-maintain-hammer.yml
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          ---
+          :foreman:
+            :username: '{{ satellite_admin_username | default("admin") }}'
+            :password: '{{ satellite_admin_password }}'
+      no_log: true
+
+    # -- Confirm we are on the expected source version --------
+    - name: Get current Satellite version
+      ansible.builtin.command:
+        cmd: "rpm -q satellite --qf '%{VERSION}'"
+      register: current_version
+      changed_when: false
+
+    - name: Assert Satellite is on the expected source version
+      ansible.builtin.assert:
+        that:
+          - current_version.stdout is version(source_version, '>=')
+          - current_version.stdout is version(target_version, '<')
+        fail_msg: >-
+          Expected Satellite {{ source_version }}.z before upgrading to
+          {{ target_version }}, but found {{ current_version.stdout }}.
+          The Server can only be upgraded from the immediately preceding
+          minor version (N-1).
+        success_msg: "Current version {{ current_version.stdout }} is valid for upgrade to {{ target_version }}."
+
+    # -- Registration required to enable repos (connected) ----
+    - name: Verify subscription status (connected mode)
+      ansible.builtin.command:
+        cmd: subscription-manager identity
+      register: rhsm_identity
+      changed_when: false
+      failed_when: false
+      when: satellite_connected | bool
+
+    - name: Fail early if not registered (connected mode)
+      ansible.builtin.assert:
+        that:
+          - rhsm_identity.rc == 0
+          - "'has been deleted' not in rhsm_identity.stdout"
+        fail_msg: >-
+          System is not properly registered with Red Hat. Repositories cannot
+          be enabled on an unregistered system. Run subscription-manager
+          register, then retry.
+      when: satellite_connected | bool
+
+    # -- Lightspeed registry auth (connected: pull new images) -
+    - name: Ensure registry auth for Lightspeed image pulls (connected mode)
+      containers.podman.podman_login:
+        registry: registry.redhat.io
+        username: "{{ rh_registry_user }}"
+        password: "{{ rh_registry_password }}"
+        authfile: /etc/foreman/registry-auth.json
+      when:
+        - satellite_connected | bool
+        - rh_registry_user is defined
+        - rh_registry_user | length > 0
+      no_log: true
+
+    # -- Verify the registry login actually works -------------
+    # The 'container-podman-login' pre-upgrade check can throw a false
+    # positive in filtered/proxied networks. We verify the login here so
+    # we can safely whitelist that check below only when auth is valid.
+    - name: Verify registry.redhat.io login is valid
+      ansible.builtin.command:
+        cmd: podman login --get-login registry.redhat.io
+      register: registry_login_check
+      changed_when: false
+      failed_when: false
+
+    - name: Determine whether to whitelist the podman-login check
+      ansible.builtin.set_fact:
+        podman_login_verified: "{{ registry_login_check.rc == 0 and registry_login_check.stdout | length > 0 }}"
+
+    - name: Show registry login status
+      ansible.builtin.debug:
+        msg: >-
+          registry.redhat.io login {{ 'verified as ' ~ registry_login_check.stdout if podman_login_verified else 'NOT verified' }}.
+          {{ 'The container-podman-login pre-check will be whitelisted as a known false positive.' if podman_login_verified else 'The container-podman-login check will NOT be whitelisted; resolve registry auth first.' }}
+
+    # -- tmux available for long-running operations -----------
+    - name: Ensure tmux is installed
+      ansible.builtin.package:
+        name: tmux
+        state: present
+
+  tasks:
+    # -- Backup -----------------------------------------------
+    - name: Create offline backup before upgrade
+      ansible.builtin.command:
+        cmd: "satellite-maintain backup offline --assumeyes {{ backup_dir }}"
+      register: backup_result
+      changed_when: backup_result.rc == 0
+      when: take_backup | bool
+
+    # -- Be current on the source z-stream first --------------
+    - name: Update to the latest source z-stream (connected)
+      ansible.builtin.command:
+        cmd: satellite-maintain update run --assumeyes
+      register: zstream_update
+      changed_when: "'Nothing to update' not in zstream_update.stdout"
+      when: satellite_connected | bool
+
+    # -- Enable target maintenance repository -----------------
+    - name: Enable Satellite {{ target_version }} maintenance repository (connected)
+      community.general.rhsm_repository:
+        name: "satellite-maintenance-{{ target_version }}-for-rhel-9-x86_64-rpms"
+        state: enabled
+      when: satellite_connected | bool
+
+    # -- Self-upgrade the maintenance tooling -----------------
+    - name: Self-upgrade satellite-maintain
+      ansible.builtin.command:
+        cmd: satellite-maintain self-upgrade
+      register: self_upgrade
+      changed_when: self_upgrade.rc == 0
+
+    # -- Pre-flight check -------------------------------------
+    # This build derives the target from the enabled maintenance repo;
+    # no --target-version argument. -y answers the prompts.
+    # -- Build the whitelist of checks to skip ----------------
+    # - disconnected mode skips the CDN-dependent repo checks
+    # - a verified-but-flagged registry login skips the false-positive
+    #   container-podman-login check
+    - name: Assemble the upgrade whitelist
+      ansible.builtin.set_fact:
+        upgrade_whitelist: >-
+          {{
+            ((disconnected_whitelist.split(',') if not (satellite_connected | bool) else [])
+             + (['container-podman-login'] if podman_login_verified else []))
+            | join(',')
+          }}
+
+    - name: Show the whitelist that will be applied
+      ansible.builtin.debug:
+        msg: "Upgrade whitelist: {{ upgrade_whitelist if upgrade_whitelist | length > 0 else '(none)' }}"
+
+    # -- Pre-flight check -------------------------------------
+    # This build derives the target from the enabled maintenance repo;
+    # no --target-version argument. -y answers the prompts.
+    - name: Run upgrade pre-flight check
+      ansible.builtin.command:
+        cmd: >-
+          satellite-maintain upgrade check -y
+          {{ '--whitelist=' ~ upgrade_whitelist if upgrade_whitelist | length > 0 else '' }}
+      register: upgrade_check
+      changed_when: false
+
+    # -- Run the upgrade --------------------------------------
+    - name: Run the upgrade
+      ansible.builtin.command:
+        cmd: >-
+          satellite-maintain upgrade run -y
+          {{ '--whitelist=' ~ upgrade_whitelist if upgrade_whitelist | length > 0 else '' }}
+      register: upgrade_run
+      changed_when: upgrade_run.rc == 0
+
+  post_tasks:
+    # -- Health verification ----------------------------------
+    - name: Wait for Satellite services to be healthy
+      ansible.builtin.command:
+        cmd: satellite-maintain service status
+      register: service_status
+      until: service_status.rc == 0
+      retries: 20
+      delay: 30
+      changed_when: false
+
+    - name: Confirm the new version
+      ansible.builtin.command:
+        cmd: "rpm -q satellite --qf '%{VERSION}'"
+      register: new_version
+      changed_when: false
+
+    - name: Check whether a reboot is required
+      ansible.builtin.command: dnf needs-restarting -r
+      register: reboot_needed
+      changed_when: false
+      failed_when: false
+
+    - name: Upgrade summary
+      ansible.builtin.debug:
+        msg: >-
+          Satellite upgrade complete.
+          Version now: {{ new_version.stdout }}
+          (was {{ current_version.stdout }}).
+          Mode: {{ 'connected' if satellite_connected | bool else 'disconnected' }}.
+          {{ 'A reboot is recommended (kernel/core libs updated).' if reboot_needed.rc == 1 else 'No reboot required.' }}
+          Next: refresh the subscription manifest and sync content; on managed
+          hosts run insights-client --register --force; upgrade Capsules
+          (6.17/6.18 remain compatible) in a later window.
